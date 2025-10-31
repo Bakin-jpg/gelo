@@ -234,9 +234,9 @@ def main():
                                 "episode_url": page.url,
                                 "iframe_url": iframe_src
                             })
-                            print(f"         ✓ Berhasil!")
+                            print(f"         âœ“ Berhasil!")
                         else:
-                            print(f"         ✗ Iframe tidak ditemukan")
+                            print(f"         âœ— Iframe tidak ditemukan")
                         
                         # Go back to episode list
                         page.go_back()
