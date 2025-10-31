@@ -1,18 +1,13 @@
-# .github/workflows/scrape.yml
+# .github/workflows/test-one-piece.yml
 
-name: Run Main Anime Scraper
+name: Run One Piece Scraper Test
 
 on:
-  schedule:
-    - cron: '0 */12 * * *' # Jalankan setiap 12 jam
-  workflow_dispatch: # Izinkan untuk dijalankan manual
+  workflow_dispatch: # Izinkan untuk dijalankan manual dari tab Actions
 
 jobs:
-  scrape:
+  test_one_piece:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout repository
@@ -24,29 +19,20 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install playwright beautifulsoup4
       
       - name: Install Playwright Browsers
         run: playwright install --with-deps chromium
           
-      - name: Run main scraper script
-        run: python -u scraper.py
+      - name: Run One Piece test script
+        run: python -u test_one_piece.py
       
-      - name: Commit and Push results
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add anime_database.json
-          if git diff-index --quiet HEAD; then
-            echo "No changes to commit."
-          else
-            git commit -m "Update anime database" -a
-          fi
-      
-      - name: Push changes
-        uses: ad-m/github-push-action@master
+      # Langkah ini HANYA akan berjalan JIKA skrip di atas GAGAL
+      - name: Archive debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
+          name: one-piece-debug-artifacts
+          path: |
+            one_piece_failure.png
+            one_piece_failure.html
