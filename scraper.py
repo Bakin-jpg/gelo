@@ -1,4 +1,4 @@
-# scraper.py (FIXED VERSION - Pagination Bug Fixed)
+# scraper.py (Final Version with Smart Pagination & Robust Metadata)
 
 import json
 import time
@@ -67,15 +67,40 @@ def scrape_show_details(page, show_url):
     details = {}
     try:
         page.goto(show_url, timeout=90000)
+        page.wait_for_load_state('networkidle', timeout=30000)
         
-        details["poster_image_url"] = page.locator("div.banner-section div.v-image__image").first.get_attribute("style").split('url("')[1].split('")')[0]
-        details["synopsis"] = page.locator("div.v-card__text div.text-caption").inner_text(timeout=5000)
-        details["genres"] = [g.inner_text() for g in page.locator(".anime-info-card .v-card__text span.v-chip__content").all()]
+        # Perbaikan untuk poster image
+        try:
+            poster_style = page.locator("div.banner-section div.v-image__image").first.get_attribute("style")
+            if poster_style and 'url(' in poster_style:
+                poster_url = re.search(r'url\(["\']?(.*?)["\']?\)', poster_style).group(1)
+                details["poster_image_url"] = poster_url
+        except Exception as e:
+            print(f"     [PERINGATAN] Gagal mengambil poster: {e}")
+        
+        # Perbaikan untuk synopsis
+        try:
+            synopsis_element = page.locator("div.v-card__text div.text-caption").first
+            if synopsis_element.is_visible():
+                details["synopsis"] = synopsis_element.inner_text(timeout=5000)
+        except Exception as e:
+            print(f"     [PERINGATAN] Gagal mengambil synopsis: {e}")
+        
+        # Perbaikan untuk genres
+        try:
+            genre_elements = page.locator(".anime-info-card .v-card__text span.v-chip__content").all()
+            if genre_elements:
+                details["genres"] = [g.inner_text() for g in genre_elements]
+        except Exception as e:
+            print(f"     [PERINGATAN] Gagal mengambil genres: {e}")
 
-        # --- PERBAIKAN LOGIKA METADATA ---
-        info_texts = [info.inner_text() for info in page.locator(".anime-info-card .d-flex.mt-2.mb-3 div.text-subtitle-2").all()]
-        details["type"] = next((text for text in info_texts if text in ["TV", "Movie", "OVA", "ONA", "Special"]), "N/A")
-        details["year"] = next((text for text in info_texts if re.match(r'^\d{4}$', text)), "N/A")
+        # Perbaikan untuk metadata lainnya
+        try:
+            info_texts = [info.inner_text() for info in page.locator(".anime-info-card .d-flex.mt-2.mb-3 div.text-subtitle-2").all()]
+            details["type"] = next((text for text in info_texts if text in ["TV", "Movie", "OVA", "ONA", "Special"]), "N/A")
+            details["year"] = next((text for text in info_texts if re.match(r'^\d{4}$', text)), "N/A")
+        except Exception as e:
+            print(f"     [PERINGATAN] Gagal mengambil info tambahan: {e}")
         
         print("     Metadata berhasil diambil.")
     except Exception as e:
@@ -111,59 +136,52 @@ def main():
             page = browser.new_page()
             try:
                 page.goto(show_url, timeout=90000)
-                
-                # FIX 1: Check if page is valid (not 404)
-                page_title = page.title()
-                if "Not Found" in page_title or "404" in page_title:
-                    print(f"   [SKIP] Halaman tidak ditemukan (404): {show_url}")
-                    page.close()
-                    continue
-                
-                # FIX 2: Try to find Watch Now button or go directly to episodes
-                watch_buttons = page.locator("a.pulse-button, a:has-text('Watch')").all()
-                if len(watch_buttons) > 0:
-                    watch_buttons[0].click()
-                    time.sleep(2)
-                
-                # FIX 3: Check if episode list exists before proceeding
-                try:
-                    page.wait_for_selector("div.episode-item", timeout=15000)
-                except TimeoutError:
-                    print(f"   [SKIP] Tidak ada episode list ditemukan untuk: {show_summary['title']}")
-                    page.close()
-                    continue
+                page.locator("a.pulse-button:has-text('Watch Now')").click()
+                page.wait_for_selector("div.episode-item", timeout=60000)
 
                 existing_ep_numbers = {ep['episode_number'] for ep in db_shows[show_url].get('episodes', [])}
                 
                 episodes_to_process_map = {}
                 page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
                 page_options_texts = ["default"]
-                
                 if page_dropdown.is_visible():
                     page_dropdown.click(timeout=10000)
                     page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
                     page_options_texts = [opt.inner_text() for opt in page.locator(".v-menu__content .v-list-item__title").all()]
                     page.keyboard.press("Escape")
-                    time.sleep(1)
                 
                 for page_range in page_options_texts:
                     if page_range != "default":
                         current_page_text = page_dropdown.locator(".v-select__selection").inner_text()
                         if current_page_text != page_range:
+                            print(f"         Navigasi ke halaman '{page_range}'...")
                             page_dropdown.click(force=True, timeout=10000)
                             page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
-                            
-                            # FIX 4: Use exact match untuk menghindari ambiguitas
-                            # Gunakan filter dengan exact text match
-                            menu_items = page.locator(".v-menu__content .v-list-item__title").all()
-                            for item in menu_items:
-                                if item.inner_text() == page_range:
-                                    item.click()
-                                    break
-                            
+                            page.locator(f".v-menu__content .v-list-item__title:has-text('{page_range}')").click()
                             page.wait_for_selector(".v-menu__content", state="hidden")
-                            time.sleep(1.5)
+                            time.sleep(2) # Tunggu konten awal halaman muncul
+
+                            # --- LOGIKA SCROLL BARU DI SINI ---
+                            # Temukan kontainer yang bisa di-scroll untuk daftar episode
+                            # Selector ini menargetkan card text yang berisi episode item
+                            episode_list_container = page.locator("div.v-card__text").filter(has=page.locator("div.episode-item")).first
+                            
+                            if episode_list_container.is_visible():
+                                print(f"         Meng-scroll untuk memuat semua episode di halaman '{page_range}'...")
+                                last_height = episode_list_container.evaluate("el => el.scrollHeight")
+                                while True:
+                                    # Scroll ke bawah dalam kontainer
+                                    episode_list_container.evaluate("el => el.scrollTo(0, el.scrollHeight)")
+                                    time.sleep(1.5) # Beri waktu untuk episode baru dimuat
+                                    new_height = episode_list_container.evaluate("el => el.scrollHeight")
+                                    if new_height == last_height:
+                                        break
+                                    last_height = new_height
+                                print(f"         Selesai. Total tinggi scroll: {last_height}px")
+                            else:
+                                print(f"         [PERINGATAN] Kontainer scroll tidak ditemukan untuk halaman '{page_range}'. Mencoba tanpa scroll.")
                     
+                    # Setelah scroll (atau jika tidak ada scroll), ambil semua episode yang terlihat
                     for ep_element in page.locator("div.episode-item").all():
                         ep_num = ep_element.locator("span.v-chip__content").inner_text()
                         if ep_num not in existing_ep_numbers:
@@ -171,7 +189,6 @@ def main():
 
                 if not episodes_to_process_map:
                     print("   Tidak ada episode baru untuk di-scrape.")
-                    page.close()
                     continue
 
                 episodes_to_scrape = sorted(list(episodes_to_process_map.keys()), key=lambda x: int(''.join(filter(str.isdigit, x.split()[-1])) or 0))
@@ -191,57 +208,26 @@ def main():
                             print(f"         Navigasi ke halaman '{target_page_range}'...")
                             page_dropdown.click(force=True, timeout=10000)
                             page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
+                            page.locator(f".v-menu__content .v-list-item__title:has-text('{target_page_range}')").click()
+                            page.wait_for_selector(".v-menu__content", state="hidden"); time.sleep(2)
                             
-                            # FIX 5: Same fix untuk navigasi pagination
-                            menu_items = page.locator(".v-menu__content .v-list-item__title").all()
-                            for item in menu_items:
-                                if item.inner_text() == target_page_range:
-                                    item.click()
-                                    break
-                            
-                            page.wait_for_selector(".v-menu__content", state="hidden")
-                            time.sleep(2)
+                            # Scroll lagi jika perlu, karena kita pindah halaman
+                            episode_list_container = page.locator("div.v-card__text").filter(has=page.locator("div.episode-item")).first
+                            if episode_list_container.is_visible():
+                                episode_list_container.evaluate("el => el.scrollTo(0, el.scrollHeight)")
+                                time.sleep(1.5)
 
                         ep_element = page.locator(f"div.episode-item:has-text('{ep_num}')").first
                         ep_element.click(timeout=15000)
                         
-                        # FIX 6: Check multiple possible selectors untuk iframe
-                        iframe_found = False
-                        iframe_src = None
+                        page.wait_for_selector("div.player-container iframe", state='attached', timeout=90000)
+                        iframe_element = page.locator("div.player-container iframe.player")
+                        iframe_element.wait_for(state="visible", timeout=30000)
+                        iframe_src = iframe_element.get_attribute('src')
                         
-                        # Try different selectors
-                        selectors = [
-                            "div.player-container iframe",
-                            "iframe.player",
-                            "iframe[src*='embed']",
-                            "iframe"
-                        ]
-                        
-                        for selector in selectors:
-                            try:
-                                page.wait_for_selector(selector, state='attached', timeout=15000)
-                                iframe_element = page.locator(selector).first
-                                iframe_src = iframe_element.get_attribute('src')
-                                if iframe_src:
-                                    iframe_found = True
-                                    break
-                            except:
-                                continue
-                        
-                        if iframe_found and iframe_src:
-                            db_shows[show_url]['episodes'].append({
-                                "episode_number": ep_num,
-                                "episode_url": page.url,
-                                "iframe_url": iframe_src
-                            })
-                            print(f"         âœ“ Berhasil!")
-                        else:
-                            print(f"         âœ— Iframe tidak ditemukan")
-                        
-                        # Go back to episode list
-                        page.go_back()
-                        time.sleep(2)
-                        
+                        db_shows[show_url]['episodes'].append({
+                            "episode_number": ep_num, "episode_url": page.url, "iframe_url": iframe_src
+                        })
                     except Exception as e:
                         print(f"        [PERINGATAN] Gagal memproses iframe untuk {ep_num}: {e}")
                 
