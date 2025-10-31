@@ -1,38 +1,39 @@
-# .github/workflows/test-one-piece.yml
+# Nama alur kerja Anda
+name: Dynamic Iframe Scraper
 
-name: Run One Piece Scraper Test
-
+# Pemicu untuk menjalankan alur kerja
 on:
-  workflow_dispatch: # Izinkan untuk dijalankan manual dari tab Actions
+  # Menjalankan setiap 6 jam sekali
+  schedule:
+    - cron: '0 */6 * * *'
+  # Juga dapat dijalankan secara manual dari tab Actions di GitHub
+  workflow_dispatch:
 
 jobs:
-  test_one_piece:
+  scrape:
+    # Menjalankan pada runner Ubuntu terbaru
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout kode dari repositori Anda
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      # 2. Mengatur lingkungan Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
+      # 3. Menginstal Playwright dan browsernya
       - name: Install dependencies
-        run: pip install playwright beautifulsoup4
-      
-      - name: Install Playwright Browsers
-        run: playwright install --with-deps chromium
-          
-      - name: Run One Piece test script
-        run: python -u test_one_piece.py
-      
-      # Langkah ini HANYA akan berjalan JIKA skrip di atas GAGAL
-      - name: Archive debug artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: one-piece-debug-artifacts
-          path: |
-            one_piece_failure.png
-            one_piece_failure.html
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          # Perintah ini akan mengunduh browser yang dibutuhkan oleh Playwright
+          # Kita hanya menginstal chromium untuk menghemat waktu
+          python -m playwright install chromium
+
+      # 4. Menjalankan skrip Python
+      - name: Run scraper
+        run: python scraper.py
