@@ -1,4 +1,4 @@
-# scraper.py (The Final, Truly Robust Version)
+# scraper.py (Final Version with New Tab Logic)
 
 import json
 import time
@@ -8,19 +8,15 @@ from playwright.sync_api import sync_playwright, TimeoutError
 from bs4 import BeautifulSoup
 
 DATABASE_FILE = "anime_database.json"
-PAGINATION_THRESHOLD = 50 
-EPISODE_BATCH_LIMIT = 10
+EPISODE_BATCH_LIMIT = 10 
 
 def load_database():
     if os.path.exists(DATABASE_FILE):
         try:
             with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
-                print(f"Database '{DATABASE_FILE}' ditemukan dan dimuat.")
                 return {show['show_url']: show for show in json.load(f)}
         except json.JSONDecodeError:
-            print(f"[PERINGATAN] File database '{DATABASE_FILE}' rusak. Memulai dari awal.")
             return {}
-    print(f"Database '{DATABASE_FILE}' tidak ditemukan. Akan membuat yang baru.")
     return {}
 
 def save_database(data_dict):
@@ -30,6 +26,7 @@ def save_database(data_dict):
     print(f"\nDatabase berhasil disimpan ke '{DATABASE_FILE}'.")
 
 def scrape_main_page_shows(page):
+    # ... (Fungsi ini tidak berubah) ...
     url = "https://kickass-anime.ru/"
     print("\n=== TAHAP 1: MENGAMBIL DAFTAR ANIME DARI HALAMAN UTAMA ===")
     try:
@@ -62,36 +59,83 @@ def scrape_main_page_shows(page):
         print(f"[ERROR di Tahap 1] Gagal mengambil daftar anime: {e}")
         return []
 
-def scrape_show_details(page, show_url):
-    """(ROBUST) Mengambil metadata detail dari halaman anime."""
-    print(f"   - Mengambil metadata dari: {show_url}")
+
+def scrape_show_details_and_episode_urls(page, show_url):
+    print(f"   - Mengambil detail dan daftar URL episode dari: {show_url}")
     details = {}
+    episode_urls = {}
     try:
         page.goto(show_url, timeout=90000)
         
+        # Ambil Metadata
         details["poster_image_url"] = page.locator("div.banner-section div.v-image__image").first.get_attribute("style").split('url("')[1].split('")')[0]
         details["synopsis"] = page.locator("div.v-card__text div.text-caption").inner_text(timeout=5000)
-        details["genres"] = [g.inner_text() for g in page.locator(".anime-info-card .v-card__text span.v-chip__content").all()]
-
-        # --- PERBAIKAN LOGIKA METADATA ---
         info_texts = [info.inner_text() for info in page.locator(".anime-info-card .d-flex.mt-2.mb-3 div.text-subtitle-2").all()]
         details["type"] = next((text for text in info_texts if text in ["TV", "Movie", "OVA", "ONA", "Special"]), "N/A")
         details["year"] = next((text for text in info_texts if re.match(r'^\d{4}$', text)), "N/A")
-        
         print("     Metadata berhasil diambil.")
+        
+        page.locator("a.pulse-button:has-text('Watch Now')").click()
+        page.wait_for_selector("div.episode-item", timeout=60000)
+        
+        # Kumpulkan semua URL episode dari semua halaman paginasi
+        page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
+        page_options_texts = ["default"]
+        if page_dropdown.is_visible():
+            page_dropdown.click(timeout=10000)
+            page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
+            page_options_texts = [opt.inner_text() for opt in page.locator(".v-menu__content .v-list-item__title").all()]
+            page.keyboard.press("Escape")
+        
+        for page_range in page_options_texts:
+            if page_range != "default":
+                current_page_text = page_dropdown.locator(".v-select__selection").inner_text()
+                if current_page_text != page_range:
+                    page_dropdown.click(force=True); time.sleep(0.5)
+                    page.locator(f".v-menu__content .v-list-item__title:has-text('{page_range}')").click()
+                    page.wait_for_selector(".v-menu__content", state="hidden"); time.sleep(1.5)
+            
+            # Ambil URL dari link, bukan elemennya
+            for ep_element in page.locator("a.episode-item").all():
+                ep_num = ep_element.locator("span.v-chip__content").inner_text()
+                ep_url = "https://kickass-anime.ru" + ep_element.get_attribute("href")
+                episode_urls[ep_num] = ep_url
+
     except Exception as e:
-        print(f"     [PERINGATAN] Gagal mengambil sebagian atau semua metadata: {e}")
-    return details
+        print(f"     [PERINGATAN] Gagal mengambil detail/URL episode: {e}")
+    
+    print(f"   Ditemukan total {len(episode_urls)} URL episode.")
+    return details, episode_urls
+
+def scrape_iframe_from_url(browser, episode_url):
+    """Buka URL episode di tab baru dan ambil iframenya."""
+    iframe_src = "Not Found"
+    page = browser.new_page()
+    try:
+        page.goto(episode_url, timeout=90000)
+        
+        # Tunggu iframe utama dengan timeout panjang
+        main_iframe_selector = "div.player-container iframe[src*='krussdomi'], div.player-container iframe[src*='cat-player']"
+        main_iframe_locator = page.locator(main_iframe_selector)
+        main_iframe_locator.wait_for(state="attached", timeout=90000)
+        
+        iframe_src = main_iframe_locator.get_attribute('src')
+    except Exception as e:
+        print(f"        [PERINGATAN] Gagal mengambil iframe dari {episode_url}: {e}")
+        page.screenshot(path=f"error_iframe_{time.time()}.png")
+    finally:
+        page.close()
+    return iframe_src
 
 def main():
     db_shows = load_database()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        main_page = browser.new_page()
 
-        latest_shows_list = scrape_main_page_shows(page)
-        page.close()
+        latest_shows_list = scrape_main_page_shows(main_page)
+        main_page.close()
 
         if not latest_shows_list:
             browser.close(); return
@@ -100,93 +144,50 @@ def main():
         for show_summary in latest_shows_list:
             show_url = show_summary['show_url']
             
-            if show_url not in db_shows:
-                print(f"\nMemproses anime baru: '{show_summary['title']}'")
-                page = browser.new_page()
-                try:
-                    details = scrape_show_details(page, show_url)
-                    db_shows[show_url] = {**show_summary, **details, "episodes": []}
-                finally: page.close()
-            else:
-                print(f"\nMengecek episode untuk: '{show_summary['title']}'")
-
             page = browser.new_page()
             try:
-                page.goto(show_url, timeout=90000)
-                page.locator("a.pulse-button:has-text('Watch Now')").click()
-                page.wait_for_selector("div.episode-item", timeout=60000)
-
+                details, episode_urls_map = scrape_show_details_and_episode_urls(page, show_url)
+                
+                if not episode_urls_map: # Jika gagal mengambil daftar episode, lewati
+                    print(f"   Tidak ada episode yang ditemukan untuk '{show_summary['title']}'. Melewati.")
+                    continue
+                
+                # Update atau buat entri baru
+                if show_url in db_shows:
+                    db_shows[show_url].update(details)
+                    print(f"\nMengecek episode untuk: '{show_summary['title']}'")
+                else:
+                    db_shows[show_url] = {**show_summary, **details, "episodes": []}
+                    print(f"\nMemproses anime baru: '{show_summary['title']}'")
+                
                 existing_ep_numbers = {ep['episode_number'] for ep in db_shows[show_url].get('episodes', [])}
+                episodes_to_scrape = {k: v for k, v in episode_urls_map.items() if k not in existing_ep_numbers}
+
+                if not episodes_to_scrape:
+                    print("   Tidak ada episode baru untuk di-scrape.")
+                    continue
                 
-                episodes_to_process_map = {}
-                page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
-                page_options_texts = ["default"]
-                if page_dropdown.is_visible():
-                    page_dropdown.click(timeout=10000)
-                    page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
-                    page_options_texts = [opt.inner_text() for opt in page.locator(".v-menu__content .v-list-item__title").all()]
-                    page.keyboard.press("Escape")
-                
-                for page_range in page_options_texts:
-                    if page_range != "default":
-                        current_page_text = page_dropdown.locator(".v-select__selection").inner_text()
-                        if current_page_text != page_range:
-                            page_dropdown.click(force=True); time.sleep(0.5)
-                            page.locator(f".v-menu__content .v-list-item__title:has-text('{page_range}')").click()
-                            page.wait_for_selector(".v-menu__content", state="hidden"); time.sleep(1.5)
-                    
-                    for ep_element in page.locator("div.episode-item").all():
-                        ep_num = ep_element.locator("span.v-chip__content").inner_text()
-                        if ep_num not in existing_ep_numbers:
-                            episodes_to_process_map[ep_num] = page_range
+                # Urutkan episode yang akan di-scrape
+                sorted_ep_to_scrape = sorted(episodes_to_scrape.items(), key=lambda item: int(''.join(filter(str.isdigit, item[0].split()[-1])) or 0))
 
-                if not episodes_to_process_map:
-                    print("   Tidak ada episode baru untuk di-scrape."); continue
-
-                episodes_to_scrape = sorted(episodes_to_process_map.keys(), key=lambda x: int(''.join(filter(str.isdigit, x.split()[-1])) or 0))
-
-                print(f"   Ditemukan {len(episodes_to_scrape)} episode baru untuk diproses.")
-                if len(episodes_to_scrape) > EPISODE_BATCH_LIMIT:
+                print(f"   Ditemukan {len(sorted_ep_to_scrape)} episode baru untuk diproses.")
+                if len(sorted_ep_to_scrape) > EPISODE_BATCH_LIMIT:
                      print(f"   Akan memproses {EPISODE_BATCH_LIMIT} episode saja (cicilan).")
-                     episodes_to_scrape = episodes_to_scrape[:EPISODE_BATCH_LIMIT]
-
-                for i, ep_num in enumerate(episodes_to_scrape):
-                    print(f"      - Memproses iframe: {ep_num} ({i+1}/{len(episodes_to_scrape)})")
-                    try:
-                        target_page_range = episodes_to_process_map[ep_num]
-                        current_page_text = page_dropdown.locator(".v-select__selection").inner_text() if page_dropdown.is_visible() else "default"
-
-                        if target_page_range != "default" and target_page_range != current_page_text:
-                            print(f"         Navigasi ke halaman '{target_page_range}'...")
-                            page_dropdown.click(force=True); time.sleep(0.5)
-                            page.locator(f".v-menu__content .v-list-item__title:has-text('{target_page_range}')").click()
-                            page.wait_for_selector(".v-menu__content", state="hidden"); time.sleep(2)
-                        
-                        page.locator(f"div.episode-item:has-text('{ep_num}')").first.click(timeout=15000)
-                        
-                        # --- LOGIKA MENUNGGU IFRAME UTAMA YANG BARU ---
-                        print("         Menunggu iframe player utama (bisa memakan waktu karena intro)...")
-                        main_iframe_selector = "div.player-container iframe[src*='krussdomi'], div.player-container iframe[src*='cat-player']"
-                        main_iframe_locator = page.locator(main_iframe_selector)
-                        
-                        main_iframe_locator.wait_for(state="attached", timeout=90000)
-                        
-                        iframe_src = main_iframe_locator.get_attribute('src')
-                        print(f"         Player utama ditemukan.")
-                        
-                        db_shows[show_url]['episodes'].append({
-                            "episode_number": ep_num, "episode_url": page.url, "iframe_url": iframe_src
-                        })
-                    except Exception as e:
-                        print(f"        [PERINGATAN] Gagal memproses iframe untuk {ep_num}: {e}")
-                        screenshot_path = f"error_{show_summary['title'].replace(' ', '_')}_{ep_num.replace(' ', '_')}.png"
-                        page.screenshot(path=screenshot_path)
-                        print(f"        Screenshot disimpan sebagai: {screenshot_path}")
-
+                     sorted_ep_to_scrape = sorted_ep_to_scrape[:EPISODE_BATCH_LIMIT]
+                
+                for i, (ep_num, ep_url) in enumerate(sorted_ep_to_scrape):
+                    print(f"      - Memproses: {ep_num} ({i+1}/{len(sorted_ep_to_scrape)})")
+                    iframe_url = scrape_iframe_from_url(browser, ep_url)
+                    db_shows[show_url]['episodes'].append({
+                        "episode_number": ep_num,
+                        "episode_url": ep_url,
+                        "iframe_url": iframe_url
+                    })
+                
                 db_shows[show_url]['episodes'].sort(key=lambda x: int(''.join(filter(str.isdigit, x.get('episode_number', '0').split()[-1])) or 0))
 
             except Exception as e:
-                print(f"   [ERROR FATAL] Gagal memproses episode untuk '{show_summary['title']}'. Melewati. Detail: {e}")
+                print(f"   [ERROR FATAL] Gagal memproses '{show_summary['title']}'. Melewati. Detail: {e}")
             finally:
                 page.close()
 
