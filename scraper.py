@@ -17,9 +17,6 @@ def run(playwright):
 
         print("Halaman berhasil dimuat. Menunggu iframe muncul...")
         # Menunggu selector 'iframe' muncul di halaman.
-        # Ini adalah langkah kunci: skrip akan berhenti sejenak hingga JavaScript
-        # selesai memuat dan menambahkan iframe ke dalam DOM.
-        # Timeout diatur ke 30 detik.
         iframe_element = page.wait_for_selector('iframe', timeout=30000)
 
         # Jika iframe ditemukan, ambil atribut 'src'-nya
@@ -31,4 +28,21 @@ def run(playwright):
                 print("Iframe ditemukan tetapi tidak memiliki atribut 'src'.")
                 sys.exit(1)
         else:
-            # Seharus
+            # Blok ini yang menyebabkan error sebelumnya.
+            # Sekarang sudah diperbaiki dengan indentasi yang benar.
+            print("Tag iframe tidak ditemukan setelah menunggu.")
+            sys.exit(1)
+
+    except TimeoutError:
+        print("Gagal: Waktu habis saat menunggu iframe muncul. Mungkin halaman berubah atau lambat dimuat.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Terjadi error: {e}")
+        sys.exit(1)
+    finally:
+        # Selalu tutup browser setelah selesai
+        browser.close()
+
+# Menjalankan fungsi utama
+with sync_playwright() as playwright:
+    run(playwright)
