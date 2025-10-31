@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 DATABASE_FILE = "anime_database.json"
 PAGINATION_THRESHOLD = 50 
-EPISODE_BATCH_LIMIT = 3 # Batas cicilan per eksekusi
+EPISODE_BATCH_LIMIT = 10 # Batas cicilan per eksekusi
 
 def load_database():
     if os.path.exists(DATABASE_FILE):
