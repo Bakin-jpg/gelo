@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 DATABASE_FILE = "anime_database.json"
 PAGINATION_THRESHOLD = 50 
-EPISODE_BATCH_LIMIT = 10 # Batas cicilan per eksekusi
+EPISODE_BATCH_LIMIT = 3 # Batas cicilan per eksekusi
 
 def load_database():
     if os.path.exists(DATABASE_FILE):
@@ -217,17 +217,45 @@ def main():
                                 episode_list_container.evaluate("el => el.scrollTo(0, el.scrollHeight)")
                                 time.sleep(1.5)
 
+                        # Klik episode yang ingin kita proses
                         ep_element = page.locator(f"div.episode-item:has-text('{ep_num}')").first
                         ep_element.click(timeout=15000)
                         
-                        page.wait_for_selector("div.player-container iframe", state='attached', timeout=90000)
-                        iframe_element = page.locator("div.player-container iframe.player")
-                        iframe_element.wait_for(state="visible", timeout=30000)
-                        iframe_src = iframe_element.get_attribute('src')
-                        
-                        db_shows[show_url]['episodes'].append({
-                            "episode_number": ep_num, "episode_url": page.url, "iframe_url": iframe_src
-                        })
+                        # Tunggu hingga player muncul dan video dimuat
+                        try:
+                            # Tunggu hingga player terlihat
+                            page.wait_for_selector("div.player-container", state='visible', timeout=30000)
+                            
+                            # Tunggu hingga iframe muncul
+                            page.wait_for_selector("div.player-container iframe", state='attached', timeout=30000)
+                            
+                            # Ambil iframe URL
+                            iframe_element = page.locator("div.player-container iframe.player")
+                            iframe_element.wait_for(state="visible", timeout=30000)
+                            iframe_src = iframe_element.get_attribute('src')
+                            
+                            if iframe_src:
+                                db_shows[show_url]['episodes'].append({
+                                    "episode_number": ep_num, "episode_url": page.url, "iframe_url": iframe_src
+                                })
+                                print(f"         Berhasil mengambil iframe untuk {ep_num}")
+                            else:
+                                print(f"         [PERINGATAN] Tidak dapat mengambil iframe URL untuk {ep_num}")
+                        except Exception as e:
+                            print(f"         [PERINGATAN] Gagal menunggu iframe untuk {ep_num}: {e}")
+                            
+                            # Coba alternatif: coba ambil iframe langsung tanpa menunggu
+                            try:
+                                iframe_element = page.locator("iframe").first
+                                if iframe_element.is_visible():
+                                    iframe_src = iframe_element.get_attribute('src')
+                                    if iframe_src:
+                                        db_shows[show_url]['episodes'].append({
+                                            "episode_number": ep_num, "episode_url": page.url, "iframe_url": iframe_src
+                                        })
+                                        print(f"         Berhasil mengambil iframe (alternatif) untuk {ep_num}")
+                            except Exception as alt_e:
+                                print(f"         [PERINGATAN] Metode alternatif juga gagal: {alt_e}")
                     except Exception as e:
                         print(f"        [PERINGATAN] Gagal memproses iframe untuk {ep_num}: {e}")
                 
